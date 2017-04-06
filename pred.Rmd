@@ -1,0 +1,164 @@
+---
+title: "Practical Machine Learning Prediction Assignment"
+author: "Chan Han Chin"
+date: "April 2, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Preprocessing
+
+### 1. Load Data
+
+Download the training and testing data and read them as `training` and `testing`. The `testing` data should be left untouched till the prediction stage.
+
+```{r}
+if(!file.exists("training.csv")) {
+fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(fileURL, "training.csv")
+}
+if(!file.exists("testing.csv")) {
+fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(fileURL, "testing.csv")
+}
+training <- read.csv("training.csv", stringsAsFactors = FALSE, na.strings = c("", "NA"))
+testing <- read.csv("testing.csv", stringsAsFactors = FALSE, na.strings = c("", "NA"))
+```
+
+### 2. Explore structure of the data
+
+We will focus on the training data as that will be the data which we use to build our models.
+
+```{r}
+dim(training)
+str(training[, 10:20])
+```
+
+As we can see above, certain variables have very high proportion of missing values and these variables will not be very useful for us to build reliable models.
+
+### 3. Missing values
+
+We set the threshold for missing values at 95%, which means that for any variables with more than 95% missing values, we simply remove these variables.
+
+```{r}
+prop.missing <- apply(training, 2, function(x) sum(is.na(x)) / nrow(training))
+training <- training[, prop.missing < 0.95]
+dim(training)
+```
+
+From 160 variables, we are left with 60 variables.
+
+### 4. Remove "for reference only" variables
+
+Some variables are only for reference (columns 1 to 7), which can be removed as it is not useful for us to build our model.
+
+```{r}
+str(training[, 1:10])
+training <- training[,-c(1:7)]
+```
+
+From 60 variables, we are left with 53 variables.
+
+### 5. Check for variables with near zero variance.
+
+Let's also check for any variables which have variance close to zero, which would also not be useful in explaining the dependent variable.
+
+```{r, warning = FALSE, message = FALSE}
+library(caret)
+nearZeroVar(training)
+```
+
+There are no variables with close to zero variance, so we will stick with 53 variables.
+
+### 6. Data splitting
+
+To prevent overfitting, we split the data into 80:20, 80% in a training set and 20% in a hold-out validation set. The training set will be used to build our models later while the hold-out validation set will be used to test our model accuracy before applying prediction on the testing data. We also first set the seed for reproducibility purpose.
+
+```{r}
+set.seed(1234)
+inTrain <- createDataPartition(training$classe, p = 0.8, list = FALSE)
+trainSet <- training[inTrain,]
+validSet <- training[-inTrain,]
+```
+
+## Building the Models
+
+We start by setting up the training control parameters. In particular, we are setting up a 5-fold cross validation for all the models that we are going to build.
+
+```{r}
+myControl <- trainControl(method = "cv", number = 5, verboseIter = FALSE)
+```
+
+### 1. Classification Tree Model
+
+We set up the grid for the complexity parameter `cp` which takes values from 0.01 to 0.05. Then we fit the model for these cp values. We then choose the model with the highest out-of-bag accuracy from our 5-fold cross validation and plot the classification tree.
+
+```{r, message = FALSE, warning = FALSE, cache = TRUE}
+library(rpart)
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+treeGrid <- expand.grid(cp = seq(0.01, 0.05, 0.01))
+tree.mod <- train(classe~., data = trainSet, trControl = myControl, tuneGrid = treeGrid, method = "rpart")
+tree.mod$results
+fancyRpartPlot(tree.mod$finalModel)
+plot(tree.mod)
+```
+
+As can be seen, the tree is rather complex at a `cp` - compexity parameter value of 0.01, the accuracy also decreases substantially if we fit a less complex model as we go from lower 'cp' to higher 'cp' values. Even at a `cp' value of 0.01, the out-of-bag accuracy is only 0.7462235. Let's explore in the next section to see if we can find better models.
+
+### 2. Random Forest Model
+
+We explore the Random Forest Model where we first set up the grid for the mtry parameter `mtry` which takes values 2, 4 and 6. `mtry` is the number of randomly sampled variables that we want to consider while splitting the nodes. Then we build 50 trees in each model for these different `mtry` values. We then choose the model with the highest out-of-bag accuracy from the 5-fold cross validation and examine the results.
+
+```{r, message = FALSE, warning = FALSE, cache = TRUE}
+library(ranger)
+library(e1071)
+rfGrid <- expand.grid(mtry = c(2, 4, 6))
+rf.mod <- train(classe~., data = trainSet, trControl = myControl, tuneGrid = rfGrid, num.trees = 50, method = "ranger")
+rf.mod$results
+plot(rf.mod)
+```
+
+As seen above, the out-of-bag accuracy of the random forest model is very high even if we just consider 2 randomly selected variables at each split. Nevertheless, we just pick the model with the highest accuracy at 0.9931210 with `mtry` value of 6.  
+
+### 3. Extreme Gradient Boosting Model
+
+We try another popular model - xgboost. We set up the grid search with several different `eta` and `max_depth` values. `nrounds` is set to 50, `gamma` is set to 0.5, while other hyperparameters are set to the default values. `eta` is the learning rate parameter, `max_depth` is the maximum depth of a tree, `nround` is the maximum number of iterations for each model with their set of parameters. We fit the model for all possible set of hyperparameters already defined and we pick the model with the highest out-of-bag accuracy from the 5-fold cross validation.
+
+```{r, message = FALSE, warning = FALSE, cache = TRUE}
+library(xgboost)
+xgbGrid <- expand.grid(eta = c(0.2, 0.3, 0.4), max_depth = c(2, 4, 6), gamma = 0.5, nrounds = 50, colsample_bytree = 1, min_child_weight = 1, subsample = 1)
+xgb.mod <- train(classe~., data = trainSet, trControl = myControl, tuneGrid = xgbGrid, method = "xgbTree")
+xgb.mod
+plot(xgb.mod)
+```
+
+As seen above, the out-of-bag accuracy of the Extreme Gradient Boosting model is also very high at different levels of learning rate and (shrinkage) and max tree depth. In this case, we also pick the model with the highest accuracy of 0.9934390 with a learning rate `eta` of 0.4 and a max tree depth of 6.
+
+## Out-of-sample Test
+
+Now we test our model on the hold-out validation set. We use the random forest model and the extreme gradient boosting model with their final tuned parameters.
+
+### 1. Random Forest Model
+
+```{r, message = FALSE, warning = FALSE}
+rf.pred <- predict(rf.mod, validSet)
+rf.cm <- confusionMatrix(rf.pred, validSet$classe)
+rf.cm$table
+rf.cm$overall[1]
+```
+
+### 2. Extreme Gradient Boosting Model
+
+```{r, message = FALSE, warning = FALSE}
+xgb.pred <- predict(xgb.mod, validSet)
+xgb.cm <- confusionMatrix(xgb.pred, validSet$classe)
+xgb.cm$table
+xgb.cm$overall[1]
+```
+
+Both models were highly accurate with an out-of-sample error of around 0.4% for random forest and 0.3% for extreme gradient boosting, but the extreme gradient boosting model appears to be slightly more consistent in predicting across different classes as seen in the confusion matrix. So the extreme gradient boosting model is chosen to predict the testing set.
